@@ -1,6 +1,12 @@
 import axios from 'axios';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5100';
+const API_URL =
+  import.meta.env.VITE_API_URL ||
+  (import.meta.env.DEV
+    ? 'http://localhost:5100'
+    : // In production, default to same-origin so deployments behind a reverse proxy work.
+      '');
+
 axios.defaults.withCredentials = true;
 
 function getAxiosErrorMessage(error, fallbackMessage) {
@@ -9,6 +15,11 @@ function getAxiosErrorMessage(error, fallbackMessage) {
 
   if (typeof backendMessage === 'string' && backendMessage.trim()) return backendMessage;
   if (status === 401) return 'Please log in to use AI features.';
+
+  // Network/CORS/connection failures: Axios sets `response` to undefined.
+  if (!error?.response) {
+    return 'Cannot reach the AI server. Check backend is running, CORS origin is allowed, and VITE_API_URL is correct.';
+  }
   return error?.message || fallbackMessage;
 }
 

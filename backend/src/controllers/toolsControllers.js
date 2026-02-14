@@ -1369,6 +1369,14 @@ export async function generatePorterForceInsights(req, res) {
       return res.status(400).json({ error: "forces must be a non-empty array" });
     }
 
+    const expectedIds = (forces || [])
+      .map((f) => (typeof f?.id === "string" ? f.id.trim() : ""))
+      .filter(Boolean);
+
+    if (expectedIds.length === 0) {
+      return res.status(400).json({ error: "forces must include non-empty id fields" });
+    }
+
     const forcesContent = forces
       .map((f) => {
         const id = f?.id || "";
@@ -1399,28 +1407,42 @@ export async function generatePorterForceInsights(req, res) {
       `Industry: ${industry}.`,
       "Generate AI insights for EACH of Porter’s Five Forces provided.",
       "Use the force score (1-5) and any criteria/notes if provided.",
+      `Return forceInsights with EXACT keys matching these force IDs (do not rename, do not omit): ${expectedIds.join(
+        ", "
+      )}.`,
       "Return JSON matching the schema.",
       "For recommendations and trends, return short bullet-like strings.",
       "Do not include markdown.",
     ].join("\n");
+
+    const forceInsightItemSchema = {
+      type: "object",
+      properties: {
+        analysis: { type: "string" },
+        recommendations: { type: "array", items: { type: "string" } },
+        trends: { type: "array", items: { type: "string" } },
+      },
+      required: ["analysis", "recommendations", "trends"],
+      additionalProperties: false,
+    };
+
+    const forceInsightsProperties = expectedIds.reduce((acc, id) => {
+      acc[id] = forceInsightItemSchema;
+      return acc;
+    }, {});
 
     const schema = {
       type: "object",
       properties: {
         forceInsights: {
           type: "object",
-          additionalProperties: {
-            type: "object",
-            properties: {
-              analysis: { type: "string" },
-              recommendations: { type: "array", items: { type: "string" } },
-              trends: { type: "array", items: { type: "string" } },
-            },
-            required: ["analysis", "recommendations", "trends"],
-          },
+          properties: forceInsightsProperties,
+          required: expectedIds,
+          additionalProperties: false,
         },
       },
       required: ["forceInsights"],
+      additionalProperties: false,
     };
 
     const openai = getOpenAIClient();
@@ -1459,17 +1481,50 @@ export async function generatePorterForceInsights(req, res) {
     const parsed = content ? JSON.parse(content) : null;
     if (!parsed) return res.status(502).json({ error: "Empty AI response" });
 
-    const expectedIds = (forces || []).map((f) => f?.id).filter(Boolean);
+    const normalizeForceId = (value) => {
+      if (typeof value !== "string") return "";
+      return value
+        .toLowerCase()
+        .trim()
+        .replace(/[_\s]+/g, "-")
+        .replace(/[^a-z0-9-]/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "");
+    };
+
     const forceInsights = parsed?.forceInsights;
     if (!forceInsights || typeof forceInsights !== "object") {
       return res.status(502).json({ error: "AI response missing forceInsights" });
     }
 
+    // Be resilient: occasionally the model returns normalized keys (e.g. supplier_power).
+    const normalizedExpected = expectedIds.reduce((acc, id) => {
+      acc[normalizeForceId(id)] = id;
+      return acc;
+    }, {});
+
+    for (const key of Object.keys(forceInsights)) {
+      if (expectedIds.includes(key)) continue;
+      const mapped = normalizedExpected[normalizeForceId(key)];
+      if (mapped && !(mapped in forceInsights)) {
+        forceInsights[mapped] = forceInsights[key];
+      }
+    }
+
     const missingIds = expectedIds.filter((id) => !(id in forceInsights));
     if (missingIds.length > 0) {
-      return res
-        .status(502)
-        .json({ error: `AI response missing insights for force IDs: ${missingIds.join(", ")}` });
+      // Prefer returning a partial-but-usable response instead of hard failing the UI.
+      for (const id of missingIds) {
+        forceInsights[id] = {
+          analysis:
+            "AI could not generate insights for this force on this attempt. Please retry generating insights.",
+          recommendations: [],
+          trends: [],
+        };
+      }
+      parsed.warnings = [
+        `AI response missing insights for force IDs: ${missingIds.join(", ")}`,
+      ];
     }
 
     const hasAnyNonEmpty = expectedIds.some((id) => {
