@@ -1,0 +1,8 @@
+# Dotenv environment files (do not commit secrets)
+.env
+.env.*
+
+# Keep template/example env files tracked
+!.env.example
+!.env.sample
+!.env.template

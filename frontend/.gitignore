@@ -1,0 +1,15 @@
+.DS_Store
+node_modules
+.idea
+package-lock.json
+.vscode/
+.idea/
+vite.config.*s.*
+# Dotenv environment files (do not commit secrets)
+.env
+.env.*
+
+# Keep template/example env files tracked
+!.env.example
+!.env.sample
+!.env.template

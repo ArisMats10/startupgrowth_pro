@@ -1,0 +1,21 @@
+# Dependencies
+**/node_modules/
+
+# Logs
+**/*.log
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Env files (keep templates)
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.sample
+!**/.env.template
+
+# Vite/React typical outputs (NOTE: keeping frontend/build because you chose to commit it)
+frontend/dist/
