@@ -244,7 +244,7 @@ export async function generateMentoringInsights(mentorProfile, businessContext, 
 export async function generateBusinessPlanSectionContent(prompt) {
   try {
     const res = await axios.post(`${API_URL}/api/tools/business-plan/section`, { prompt });
-    if (typeof res?.data?.content === 'string') return res.data.content;
+    if (typeof res?.data?.content === 'string' && res.data.content.trim()) return res.data.content;
     throw new Error('Empty response from AI service.');
   } catch (error) {
     console.error('Error generating business plan section content:', error);

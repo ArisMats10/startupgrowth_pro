@@ -660,23 +660,96 @@ export async function generateBusinessPlanSection(req, res) {
       return res.status(400).json({ error: "prompt is required" });
     }
 
-    let response;
-    try {
-      const openai = getOpenAIClient();
-      response = await openai.chat.completions.create({
-        model: getOpenAIModel(),
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.7,
+    const systemInstruction =
+      "You write business plan sections. Follow the user's instructions carefully, stay consistent with provided context, and avoid repeating the exact same wording when asked to revise.";
+
+    const extractResponseText = (response) => {
+      const content = response?.choices?.[0]?.message?.content;
+      return typeof content === "string" ? content.trim() : "";
+    };
+
+    const extractResponsesApiText = (response) => {
+      const direct = response?.output_text;
+      if (typeof direct === "string" && direct.trim()) return direct.trim();
+
+      const output = Array.isArray(response?.output) ? response.output : [];
+      const chunks = [];
+      for (const item of output) {
+        const contentArr = Array.isArray(item?.content) ? item.content : [];
+        for (const c of contentArr) {
+          if (c?.type === "output_text" && typeof c?.text === "string") {
+            chunks.push(c.text);
+          }
+        }
+      }
+      return chunks.join("\n").trim();
+    };
+
+    const createWithChatCompletions = async (openai, model, userPrompt) => {
+      const response = await openai.chat.completions.create({
+        model,
+        messages: [
+          { role: "system", content: systemInstruction },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: 0.8,
+        presence_penalty: 0.2,
+        frequency_penalty: 0.1,
         max_completion_tokens: 900,
       });
-    } catch (error) {
-      const mapped = mapOpenAIErrorToHttp(error);
-      if (mapped) return res.status(mapped.status).json({ error: mapped.message });
-      throw error;
+
+      const text = extractResponseText(response);
+      return { text, raw: response };
+    };
+
+    const createWithResponsesApi = async (openai, model, userPrompt) => {
+      // Some newer models may prefer/require the Responses API.
+      const response = await openai.responses.create({
+        model,
+        instructions: systemInstruction,
+        input: userPrompt,
+        temperature: 0.8,
+        max_output_tokens: 900,
+      });
+
+      const text = extractResponsesApiText(response);
+      return { text, raw: response };
+    };
+
+    const openai = getOpenAIClient();
+    const modelCandidates = [getOpenAIModel(), getOpenAIModelFallback()].filter(Boolean);
+
+    let lastError = null;
+    for (const model of modelCandidates) {
+      try {
+        // Try chat.completions first.
+        const chat = await createWithChatCompletions(openai, model, prompt);
+        if (chat.text) return res.status(200).json({ content: chat.text });
+
+        // If chat returns empty, try Responses API.
+        const resp = await createWithResponsesApi(openai, model, prompt);
+        if (resp.text) return res.status(200).json({ content: resp.text });
+
+        lastError = new Error("Empty AI response");
+      } catch (error) {
+        lastError = error;
+        if (model !== modelCandidates[modelCandidates.length - 1] && isInvalidModelError(error)) {
+          continue;
+        }
+
+        const mapped = mapOpenAIErrorToHttp(error);
+        if (mapped) return res.status(mapped.status).json({ error: mapped.message });
+
+        // If this model didn't work, try fallback model before failing.
+        if (model !== modelCandidates[modelCandidates.length - 1]) {
+          continue;
+        }
+      }
     }
 
-    const content = response?.choices?.[0]?.message?.content?.trim();
-    return res.status(200).json({ content: content || "" });
+    // Never return empty content: surface an actionable error.
+    const message = lastError?.message || "AI returned empty content";
+    return res.status(503).json({ error: message });
   } catch (error) {
     return res.status(500).json({ error: error?.message || "Server Error" });
   }
@@ -703,27 +776,6 @@ export async function generateBusinessPlanInsights(req, res) {
       - missingElements importance must be one of: high, medium, low
       - suggestions must be concrete and actionable`;
 
-    {/*const schema = {
-      type: "object",
-      properties: {
-        assessment: { type: "string" },
-        missingElements: { type: "array", items: { type: "string" } },
-        improvements: {
-          type: "array",
-          items: {
-            type: "object",
-            properties: {
-              area: { type: "string" },
-              suggestion: { type: "string" },
-              impact: { type: "string" },
-            },
-            required: ["area", "suggestion", "impact"],
-          },
-        },
-        bestPractices: { type: "array", items: { type: "string" } },
-      },
-      required: ["assessment", "missingElements", "improvements", "bestPractices"],
-    };*/}
 
     const schema = {
         type: "object",

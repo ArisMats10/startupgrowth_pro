@@ -102,27 +102,40 @@ const AIAssistantPanel = ({
 
       const resolvedDescription = (sectionDescription || '').trim();
       const existingText = (content || '').trim();
+      const currentDraft = (aiGeneratedContent || '').trim();
+      const sourceText = currentDraft || existingText;
+      const generationId = new Date().toISOString();
 
-      const baseInstruction = customPrompt?.trim()
-        ? customPrompt.trim()
-        : existingText
+      const userInstruction = customPrompt?.trim() ? customPrompt.trim() : '';
+
+      const baseInstruction = userInstruction
+        ? `USER INSTRUCTIONS (follow these precisely):\n${userInstruction}`
+        : sourceText
           ? `Improve, expand, and polish the section text below. Keep it consistent with the business plan context.`
           : `Write a detailed, original, practical section for a business plan, consistent with the business plan context.`;
 
       const fullPrompt = [
         baseInstruction,
         '',
+        `GENERATION_ID (do not mention in output): ${generationId}`,
+        '',
         `TARGET SECTION: ${resolvedTitle}`,
         resolvedDescription ? `SECTION DESCRIPTION: ${resolvedDescription}` : null,
         '',
-        `CURRENT SECTION TEXT (may be empty):`,
-        existingText || `(empty)`,
+        currentDraft
+          ? `CURRENT AI DRAFT (rewrite into a NEW improved version; do not reuse sentences verbatim):`
+          : `CURRENT SECTION TEXT (may be empty):`,
+        sourceText || `(empty)`,
         '',
         buildCompanyContext ? `BUSINESS PLAN CONTEXT (use as source of truth):\n${buildCompanyContext}` : null,
         '',
         `CONSISTENCY RULES:`,
         `- Reuse the same company name, product names, target market, and numbers already mentioned in the context.`,
         `- Do not invent contradictory facts. If info is missing, write plausible placeholders clearly marked (e.g. "[TBD]").`,
+        `- If a new USER INSTRUCTION conflicts with the context, prefer the context and use [TBD] for missing details.`,
+        currentDraft
+          ? `- Produce a noticeably different revision (different structure and wording). Avoid repeating the same opening sentences.`
+          : null,
         `- Return ONLY the section text (no JSON, no markdown fences).`,
       ]
         .filter(Boolean)
@@ -144,13 +157,10 @@ const AIAssistantPanel = ({
         throw new Error('AI returned empty draft. Please try again.');
       }
 
-      setAiGeneratedContent((prev) => {
-        const prevTrimmed = (prev || '').trim();
-        const nextChunk = (aiContent || '').trim();
-        const merged = prevTrimmed ? `${prevTrimmed}\n\n${nextChunk}` : nextChunk;
-        onAiDraftChange?.(merged);
-        return merged;
-      });
+      // Replace the draft each time (no auto-append) so repeated generations don't look identical.
+      const nextDraft = (aiContent || '').trim();
+      setAiGeneratedContent(nextDraft);
+      onAiDraftChange?.(nextDraft);
 
       setShowAIGeneratedBox(true);
     } catch (error) {
