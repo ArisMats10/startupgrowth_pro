@@ -1,5 +1,5 @@
 import React from "react";
-import { BrowserRouter, Routes as RouterRoutes, Route } from "react-router-dom";
+import { Routes as RouterRoutes, Route } from "react-router-dom";
 import SignupPage from "pages/signuppage";
 import LoginPage from "pages/loginpage";
 import ScrollToTop from "components/ScrollToTop";
@@ -16,8 +16,7 @@ import RequireAuth from "components/RequireAuth";
 
 const Routes = () => {
   return (
-    <BrowserRouter>
-      <ErrorBoundary>
+    <ErrorBoundary>
       <ScrollToTop />
       <RouterRoutes>
 
@@ -66,8 +65,7 @@ const Routes = () => {
         />
         <Route path="*" element={<NotFound />} />
       </RouterRoutes>
-      </ErrorBoundary>
-    </BrowserRouter>
+    </ErrorBoundary>
   );
 };
 

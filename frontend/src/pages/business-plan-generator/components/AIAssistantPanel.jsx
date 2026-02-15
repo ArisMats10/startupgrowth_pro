@@ -31,15 +31,10 @@ const AIAssistantPanel = ({
   const [aiInsights, setAiInsights] = useState(null);
   const [isGeneratingInsights, setIsGeneratingInsights] = useState(false);
   const [isGeneratingContent, setIsGeneratingContent] = useState(false);
-  const [aiGeneratedContent, setAiGeneratedContent] = useState('');
-  const [showAIGeneratedBox, setShowAIGeneratedBox] = useState(false);
+  const aiGeneratedContent = aiDraft || '';
+  const showAIGeneratedBox = Boolean(String(aiGeneratedContent || '').trim());
 
   const promptRef = useRef(null);
-
-  useEffect(() => {
-    setAiGeneratedContent(aiDraft || '');
-    setShowAIGeneratedBox(Boolean((aiDraft || '').trim()));
-  }, [selectedSection, aiDraft]);
 
   useEffect(() => {
     setAiInsights(initialAiInsights || null);
@@ -102,7 +97,7 @@ const AIAssistantPanel = ({
 
       const resolvedDescription = (sectionDescription || '').trim();
       const existingText = (content || '').trim();
-      const currentDraft = (aiGeneratedContent || '').trim();
+      const currentDraft = (aiDraft || '').trim();
       const sourceText = currentDraft || existingText;
       const generationId = new Date().toISOString();
 
@@ -159,10 +154,7 @@ const AIAssistantPanel = ({
 
       // Replace the draft each time (no auto-append) so repeated generations don't look identical.
       const nextDraft = (aiContent || '').trim();
-      setAiGeneratedContent(nextDraft);
       onAiDraftChange?.(nextDraft);
-
-      setShowAIGeneratedBox(true);
     } catch (error) {
       alert(error?.message || 'Failed to generate content.');
     } finally {
@@ -271,8 +263,6 @@ const AIAssistantPanel = ({
                   variant="ghost"
                   size="sm"
                   onClick={() => {
-                    setAiGeneratedContent('');
-                    setShowAIGeneratedBox(false);
                     onAiDraftChange?.('');
                   }}
                 >
@@ -288,7 +278,6 @@ const AIAssistantPanel = ({
                 placeholder="AI-generated content will appear here. You can edit it before applying."
                 value={aiGeneratedContent}
                 onChange={(e) => {
-                  setAiGeneratedContent(e.target.value);
                   onAiDraftChange?.(e.target.value);
                 }}
               />

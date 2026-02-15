@@ -324,7 +324,7 @@ export async function generateBusinessAdvice(chatHistory, userMessage) {
           chatHistory: backendAttempts[attemptIndex],
           userMessage: messageText,
         },
-        { timeout: 20000 }
+        { timeout: 45000 }
       );
 
       if (typeof res?.data?.message === 'string') {
@@ -339,6 +339,7 @@ export async function generateBusinessAdvice(chatHistory, userMessage) {
 
       const status = backendError?.response?.status;
       const backendMessage = backendError?.response?.data?.error;
+      const isTimeout = backendError?.code === 'ECONNABORTED' || /timeout/i.test(String(backendError?.message || ''));
 
       // If the backend is telling us its OpenAI credentials are missing/invalid, retries won't help.
       if (
@@ -360,6 +361,7 @@ export async function generateBusinessAdvice(chatHistory, userMessage) {
 
       // Retry once after a short delay.
       if (attemptIndex < backendAttempts.length - 1) {
+        // If we hit a timeout, the first attempt likely took too long; retry with trimmed history.
         await delay(400);
         continue;
       }

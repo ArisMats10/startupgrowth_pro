@@ -7,9 +7,46 @@ import {
   isInvalidModelError,
 } from "../services/openaiClient.js";
 
-async function createChatCompletionWithModelFallback(openai, params) {
+function extractChatCompletionText(response) {
+  const message = response?.choices?.[0]?.message;
+  const text = message?.content;
+  return typeof text === "string" ? text.trim() : "";
+}
+
+function extractResponsesApiText(response) {
+  const direct = response?.output_text;
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+
+  const output = Array.isArray(response?.output) ? response.output : [];
+  const chunks = [];
+  for (const item of output) {
+    const contentArr = Array.isArray(item?.content) ? item.content : [];
+    for (const c of contentArr) {
+      if (c?.type === "output_text" && typeof c?.text === "string") {
+        chunks.push(c.text);
+      }
+    }
+  }
+  return chunks.join("\n").trim();
+}
+
+function buildTranscript(messages) {
+  const safe = Array.isArray(messages) ? messages : [];
+  return safe
+    .map((m) => {
+      const role = String(m?.role || "user").toUpperCase();
+      const content = typeof m?.content === "string" ? m.content.trim() : "";
+      if (!content) return null;
+      return `${role}: ${content}`;
+    })
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+async function createAdvisorTextWithModelFallback(openai, { system, messages, temperature, maxTokens }) {
   const modelCandidates = [getOpenAIModel(), getOpenAIModelFallback()].filter(Boolean);
   let lastError = null;
+  let lastDebug = null;
 
   const isTransientError = (error) => {
     const status = error?.status || error?.response?.status;
@@ -20,34 +57,163 @@ async function createChatCompletionWithModelFallback(openai, params) {
 
   const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const maxTransientRetries = 2;
+  const maxEmptyRetries = 1;
+
+  const summarizeMessages = (msgs) => {
+    const safe = Array.isArray(msgs) ? msgs : [];
+    return {
+      count: safe.length,
+      roles: safe.reduce((acc, m) => {
+        const role = String(m?.role || "unknown");
+        acc[role] = (acc[role] || 0) + 1;
+        return acc;
+      }, {}),
+      charCount: safe.reduce((sum, m) => {
+        const content = typeof m?.content === "string" ? m.content : "";
+        return sum + content.length;
+      }, 0),
+    };
+  };
 
   for (const model of modelCandidates) {
-    for (let attempt = 0; attempt <= maxTransientRetries; attempt += 1) {
-      try {
-        return await openai.chat.completions.create({
-          ...params,
-          model,
-        });
-      } catch (error) {
-        lastError = error;
+    const isLastModel = model === modelCandidates[modelCandidates.length - 1];
 
-        // If this model is invalid and we have a fallback model, switch models.
-        if (model !== modelCandidates[modelCandidates.length - 1] && isInvalidModelError(error)) {
+    const preferResponsesFirst = /^gpt-5/i.test(String(model));
+
+    let emptyRetriesLeft = maxEmptyRetries;
+
+    const tryChatCompletions = async () => {
+      // Works well for 4o; may be flaky/empty for some 5.x configs.
+      for (let attempt = 0; attempt <= maxTransientRetries; attempt += 1) {
+        try {
+          const response = await openai.chat.completions.create({
+            model,
+            messages: [{ role: "system", content: system }, ...(messages || [])],
+            temperature,
+            max_completion_tokens: maxTokens,
+            tool_choice: "none",
+          });
+
+          const text = extractChatCompletionText(response);
+          if (text) return { text, model, api: "chat.completions" };
+
+          lastDebug = { model, api: "chat.completions", reason: "empty" };
+
+          if (process.env.NODE_ENV !== "production") {
+            console.warn("[advisor] empty chat.completions output", {
+              model,
+              attempt,
+              messages: summarizeMessages(messages),
+            });
+          }
+
+          if (emptyRetriesLeft > 0) {
+            emptyRetriesLeft -= 1;
+            await delay(150);
+            continue;
+          }
+
           break;
-        }
+        } catch (error) {
+          lastError = error;
 
-        // Retry transient upstream/network failures a couple of times.
-        if (attempt < maxTransientRetries && isTransientError(error)) {
-          await delay(250 * Math.pow(2, attempt));
-          continue;
-        }
+          if (!isLastModel && isInvalidModelError(error)) {
+            break;
+          }
 
-        throw error;
+          if (attempt < maxTransientRetries && isTransientError(error)) {
+            await delay(250 * Math.pow(2, attempt));
+            continue;
+          }
+
+          if (!isLastModel && isTransientError(error)) {
+            break;
+          }
+
+          throw error;
+        }
       }
-    }
+      return null;
+    };
+
+    const tryResponsesApi = async () => {
+      // Better supported for many 5.x models; prefer it for gpt-5.x.
+      let localEmptyRetriesLeft = maxEmptyRetries;
+
+      for (let attempt = 0; attempt <= maxTransientRetries; attempt += 1) {
+        try {
+          const input = Array.isArray(messages)
+            ? messages.map((m) => ({
+                role: m?.role === "assistant" ? "assistant" : "user",
+                content: typeof m?.content === "string" ? m.content : "",
+              }))
+            : "(no prior messages)";
+
+          const response = await openai.responses.create({
+            model,
+            instructions: system,
+            input,
+            temperature,
+            max_output_tokens: maxTokens,
+          });
+
+          const text = extractResponsesApiText(response);
+          if (text) return { text, model, api: "responses" };
+
+          lastDebug = { model, api: "responses", reason: "empty" };
+          lastError = new Error("AI returned an empty response");
+
+          if (process.env.NODE_ENV !== "production") {
+            console.warn("[advisor] empty responses output", {
+              model,
+              attempt,
+              messages: summarizeMessages(messages),
+            });
+          }
+
+          if (localEmptyRetriesLeft > 0) {
+            localEmptyRetriesLeft -= 1;
+            await delay(150);
+            continue;
+          }
+
+          break;
+        } catch (error) {
+          lastError = error;
+
+          if (!isLastModel && isInvalidModelError(error)) {
+            break;
+          }
+
+          if (attempt < maxTransientRetries && isTransientError(error)) {
+            await delay(250 * Math.pow(2, attempt));
+            continue;
+          }
+
+          if (!isLastModel && isTransientError(error)) {
+            break;
+          }
+
+          throw error;
+        }
+      }
+
+      return null;
+    };
+
+    const first = preferResponsesFirst ? tryResponsesApi : tryChatCompletions;
+    const second = preferResponsesFirst ? tryChatCompletions : tryResponsesApi;
+
+    const primary = await first();
+    if (primary?.text) return primary;
+
+    const secondary = await second();
+    if (secondary?.text) return secondary;
   }
 
-  throw lastError || new Error("Failed to create chat completion");
+  const err = lastError || new Error("Failed to generate advice");
+  if (lastDebug) err.advisorDebug = lastDebug;
+  throw err;
 }
 
 function normalizeMessages(input) {
@@ -179,44 +345,49 @@ export async function generateAdvisorResponse(req, res) {
 
     const openai = getOpenAIClient();
 
-    const response = await createChatCompletionWithModelFallback(openai, {
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are an AI business advisor. Provide concise, practical advice about business strategy, planning, and growth. Reference the available tools: SWOT Analysis, Porter's Five Forces, and Business Plan Generator when relevant.",
-        },
-        ...normalizedHistory,
-        { role: "user", content: userMessage },
-      ],
+    const system =
+      "You are an AI business advisor. Provide concise, practical advice about business strategy, planning, and growth. Reference the available tools: SWOT Analysis, Porter's Five Forces, and Business Plan Generator when relevant.";
+
+    const { text } = await createAdvisorTextWithModelFallback(openai, {
+      system,
+      messages: [...normalizedHistory, { role: "user", content: userMessage }],
       temperature: 0.7,
-      max_completion_tokens: 300,
+      maxTokens: 300,
     });
 
-    const message = response?.choices?.[0]?.message?.content;
-    if (typeof message !== "string" || !message.trim()) {
+    if (!text) {
       return res.status(503).json({ error: "AI returned an empty response. Please try again." });
     }
-    return res.status(200).json({ message });
+    return res.status(200).json({ message: text });
   } catch (error) {
     const status = error?.status || error?.response?.status;
     const message = error?.message || error?.response?.data?.error || "Failed to generate advice";
+    const debug = process.env.NODE_ENV !== 'production' ? error?.advisorDebug : undefined;
+
+    if (/empty response/i.test(String(message))) {
+      return res.status(503).json({ error: "AI returned an empty response. Please try again.", ...(debug ? { debug } : {}) });
+    }
 
     if (/OPENAI_API_KEY is not set/i.test(message)) {
-      return res.status(503).json({ error: message });
+      return res.status(503).json({ error: message, ...(debug ? { debug } : {}) });
     }
 
     if (status === 401) {
       // This is a backend configuration problem (invalid API key), not the user's auth.
       return res
         .status(503)
-        .json({ error: "AI provider authentication failed. Verify OPENAI_API_KEY in backend/.env and restart the server." });
+        .json({ error: "AI provider authentication failed. Verify OPENAI_API_KEY in backend/.env and restart the server.", ...(debug ? { debug } : {}) });
     }
 
     if (status === 429) {
-      return res.status(429).json({ error: "OpenAI rate limit/quota exceeded. Try again later." });
+      return res.status(429).json({ error: "OpenAI rate limit/quota exceeded. Try again later.", ...(debug ? { debug } : {}) });
     }
 
-    return res.status(500).json({ error: message });
+    // Upstream AI or network instability: return a consistent 503 so the frontend can handle it.
+    if (status && [500, 502, 503, 504].includes(status)) {
+      return res.status(503).json({ error: "AI service is temporarily unavailable. Please try again.", ...(debug ? { debug } : {}) });
+    }
+
+    return res.status(500).json({ error: message, ...(debug ? { debug } : {}) });
   }
 }
