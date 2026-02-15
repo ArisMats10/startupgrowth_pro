@@ -14,21 +14,40 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
+const normalizeOrigin = (value) => {
+  if (!value) return value;
+  return String(value).trim().replace(/\/$/, "");
+};
+
+const isDev = process.env.NODE_ENV !== 'production';
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow non-browser requests (no Origin header)
+    if (!origin) return callback(null, true);
+
+    const requestOrigin = normalizeOrigin(origin);
+
+    // In development, be permissive so local dev isn't blocked by origin/port quirks.
+    if (isDev) return callback(null, true);
+
+    const envList = process.env.CORS_ORIGIN
+      ? process.env.CORS_ORIGIN.split(',').map(normalizeOrigin).filter(Boolean)
+      : [];
+
+    if (envList.includes(requestOrigin)) return callback(null, true);
+    return callback(null, false);
+  },
+  credentials: true,
+  optionsSuccessStatus: 204,
+};
+
 app.use(
-  cors({
-    origin: (origin, callback) => {
-      const envList = process.env.CORS_ORIGIN
-        ? process.env.CORS_ORIGIN.split(',').map((s) => s.trim()).filter(Boolean)
-        : ['http://localhost:5123', 'http://127.0.0.1:5123'];
+  cors(corsOptions)
+);
 
-      // Allow non-browser requests (no Origin header)
-      if (!origin) return callback(null, true);
-
-      if (envList.includes(origin)) return callback(null, true);
-      return callback(new Error(`Not allowed by CORS: ${origin}`));
-    },
-    credentials: true, 
-}));
+// Handle preflight requests explicitly.
+app.options(/.*/, cors(corsOptions));
 
 
 app.use('/api/auth', authRoutes);

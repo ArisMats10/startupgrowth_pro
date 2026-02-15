@@ -4,7 +4,7 @@ export function getOpenAIClient() {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error(
-      "OPENAI_API_KEY is not set. Add it to backend/.env and restart the backend server."
+      "OPENAI_API_KEY is not set. Create backend/.env, add OPENAI_API_KEY=... and restart the backend server."
     );
   }
   return new OpenAI({ apiKey });

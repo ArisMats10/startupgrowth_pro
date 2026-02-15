@@ -36,7 +36,15 @@ const AIBusinessAdvisor = () => {
     const raw = String(err?.message || '').trim();
     if (!raw) return 'Sorry, I could not generate a response right now. Please try again.';
     if (/rate limit|quota|429/i.test(raw)) return 'AI is rate-limited right now. Please try again in a minute.';
-    if (/OPENAI_API_KEY|temporarily unavailable|503/i.test(raw)) return 'AI service is temporarily unavailable. Please try again later.';
+    if (/OPENAI_API_KEY is not set/i.test(raw)) {
+      return 'AI server is not configured. Add OPENAI_API_KEY to backend/.env and restart the backend server.';
+    }
+    if (/AI provider authentication failed|OpenAI authentication failed|status\s*:\s*503/i.test(raw)) {
+      return 'AI server configuration error: verify OPENAI_API_KEY in backend/.env, then restart the backend server.';
+    }
+    if (/temporarily unavailable|\b503\b/i.test(raw)) {
+      return 'AI service is temporarily unavailable. Please try again later.';
+    }
     return 'Sorry, I could not generate a response right now. Please try again.';
   };
 

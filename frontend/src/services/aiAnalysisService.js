@@ -340,6 +340,14 @@ export async function generateBusinessAdvice(chatHistory, userMessage) {
       const status = backendError?.response?.status;
       const backendMessage = backendError?.response?.data?.error;
 
+      // If the backend is telling us its OpenAI credentials are missing/invalid, retries won't help.
+      if (
+        typeof backendMessage === 'string' &&
+        /(OPENAI_API_KEY|AI provider authentication failed|OpenAI authentication failed)/i.test(backendMessage)
+      ) {
+        throw new Error(backendMessage);
+      }
+
       // If the backend explicitly responded with a 4xx (except 408), don't retry or fall back silently.
       if (status && status >= 400 && status < 500 && status !== 408 && status !== 429) {
         throw new Error(backendMessage || backendError?.message || 'Backend AI request failed.');

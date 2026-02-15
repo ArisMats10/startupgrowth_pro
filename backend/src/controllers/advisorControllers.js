@@ -11,18 +11,39 @@ async function createChatCompletionWithModelFallback(openai, params) {
   const modelCandidates = [getOpenAIModel(), getOpenAIModelFallback()].filter(Boolean);
   let lastError = null;
 
+  const isTransientError = (error) => {
+    const status = error?.status || error?.response?.status;
+    const message = String(error?.message || error?.response?.data?.error || "");
+    if (status && [500, 502, 503, 504].includes(status)) return true;
+    return /(ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|fetch failed|network)/i.test(message);
+  };
+
+  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const maxTransientRetries = 2;
+
   for (const model of modelCandidates) {
-    try {
-      return await openai.chat.completions.create({
-        ...params,
-        model,
-      });
-    } catch (error) {
-      lastError = error;
-      if (model !== modelCandidates[modelCandidates.length - 1] && isInvalidModelError(error)) {
-        continue;
+    for (let attempt = 0; attempt <= maxTransientRetries; attempt += 1) {
+      try {
+        return await openai.chat.completions.create({
+          ...params,
+          model,
+        });
+      } catch (error) {
+        lastError = error;
+
+        // If this model is invalid and we have a fallback model, switch models.
+        if (model !== modelCandidates[modelCandidates.length - 1] && isInvalidModelError(error)) {
+          break;
+        }
+
+        // Retry transient upstream/network failures a couple of times.
+        if (attempt < maxTransientRetries && isTransientError(error)) {
+          await delay(250 * Math.pow(2, attempt));
+          continue;
+        }
+
+        throw error;
       }
-      throw error;
     }
   }
 
@@ -174,7 +195,7 @@ export async function generateAdvisorResponse(req, res) {
 
     const message = response?.choices?.[0]?.message?.content;
     if (typeof message !== "string" || !message.trim()) {
-      return res.status(502).json({ error: "AI returned an empty response. Please try again." });
+      return res.status(503).json({ error: "AI returned an empty response. Please try again." });
     }
     return res.status(200).json({ message });
   } catch (error) {
@@ -186,7 +207,10 @@ export async function generateAdvisorResponse(req, res) {
     }
 
     if (status === 401) {
-      return res.status(502).json({ error: "OpenAI authentication failed. Check OPENAI_API_KEY." });
+      // This is a backend configuration problem (invalid API key), not the user's auth.
+      return res
+        .status(503)
+        .json({ error: "AI provider authentication failed. Verify OPENAI_API_KEY in backend/.env and restart the server." });
     }
 
     if (status === 429) {
